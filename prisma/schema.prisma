@@ -1,0 +1,48 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model Game {
+  id            String   @id @default(uuid())
+  inviteCode    String   @unique
+  round         Int      @default(0)
+  promptCard    String
+  promptCardIndex Int
+  cardCzar      String
+  gamePhase     String   @default("lobby")
+  winner        String?
+  createdAt     DateTime @default(now())
+  lastUpdated   DateTime @updatedAt
+  players       Player[]
+}
+
+model Player {
+  id          String  @id @default(uuid())
+  name        String
+  hand        String  // JSON string of cards
+  score       Int     @default(0)
+  selectedCard String?
+  isConnected Boolean @default(true)
+  isReady     Boolean @default(false)
+  gameId      String
+  game        Game    @relation(fields: [gameId], references: [id], onDelete: Cascade)
+}
+
+model PromptCard {
+  id    String @id @default(uuid())
+  text  String
+}
+
+model ResponseCard {
+  id    String @id @default(uuid())
+  text  String
+}
+
