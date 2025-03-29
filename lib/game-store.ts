@@ -1,7 +1,42 @@
 import type { GameState, Player as PlayerType } from "@/types/game"
-import { pusherServer } from "./pusher" // Fixed import
+import { pusherServer } from "./pusher"
 import { randomUUID } from "crypto"
-import prisma from "./prisma"
+import { PrismaClient } from "@prisma/client"
+
+const prisma = new PrismaClient()
+
+// Types for database entities
+type DbPlayer = {
+  id: string;
+  name: string;
+  hand: string;
+  score: number;
+  selectedCard: string | null;
+  isConnected: boolean;
+  isReady: boolean;
+}
+
+type DbGame = {
+  id: string;
+  inviteCode: string;
+  round: number;
+  promptCard: string;
+  promptCardIndex: number;
+  cardCzar: string;
+  players: DbPlayer[];
+  gamePhase: "lobby" | "selection" | "judging" | "results";
+  winner: string | null;
+  createdAt: Date;
+  lastUpdated: Date;
+}
+
+type DbResponseCard = {
+  text: string;
+}
+
+type DbPromptCard = {
+  text: string;
+}
 
 // Generate a random 6-character invite code
 function generateInviteCode(): string {
@@ -19,7 +54,7 @@ function shuffleArray<T>(array: T[]): T[] {
 }
 
 // Convert database Player to app Player type
-function dbPlayerToAppPlayer(dbPlayer: any): PlayerType {
+function dbPlayerToAppPlayer(dbPlayer: DbPlayer): PlayerType {
   return {
     id: dbPlayer.id,
     name: dbPlayer.name,
@@ -32,7 +67,7 @@ function dbPlayerToAppPlayer(dbPlayer: any): PlayerType {
 }
 
 // Convert database Game to app GameState type
-function dbGameToAppGameState(dbGame: any): GameState {
+function dbGameToAppGameState(dbGame: DbGame): GameState {
   const players: Record<string, PlayerType> = {}
 
   for (const dbPlayer of dbGame.players) {
@@ -47,7 +82,7 @@ function dbGameToAppGameState(dbGame: any): GameState {
     promptCardIndex: dbGame.promptCardIndex,
     cardCzar: dbGame.cardCzar,
     players,
-    gamePhase: dbGame.gamePhase as "lobby" | "selection" | "judging" | "results",
+    gamePhase: dbGame.gamePhase,
     winner: dbGame.winner,
     createdAt: dbGame.createdAt.getTime(),
     lastUpdated: dbGame.lastUpdated.getTime(),
@@ -105,7 +140,7 @@ export async function getGameByInviteCode(inviteCode: string): Promise<GameState
     return null
   }
 
-  return dbGameToAppGameState(game)
+  return dbGameToAppGameState(game as DbGame)
 }
 
 // Join a game
@@ -144,10 +179,9 @@ export async function joinGame(
     include: { players: true },
   })
 
-  const gameState = dbGameToAppGameState(updatedGame)
+  const gameState = dbGameToAppGameState(updatedGame as DbGame)
 
   // Notify all clients about the new player
-  const payload = { type: "player-joined", playerId, playerName }
   if (playerId && playerName) {
     pusherServer.trigger(`game-${inviteCode}`, "game-event", { type: "player-joined", playerId, playerName })
   }
@@ -170,7 +204,7 @@ export async function setPlayerReady(
     return null
   }
 
-  const player = game.players.find((p) => p.id === playerId)
+  const player = game.players.find((p: DbPlayer) => p.id === playerId)
   if (!player) {
     return null
   }
@@ -182,13 +216,12 @@ export async function setPlayerReady(
   })
 
   // Notify all clients about the player's ready status
-  const payload = { type: "player-ready", playerId }
   if (playerId) {
     pusherServer.trigger(`game-${inviteCode}`, "game-event", { type: "player-ready", playerId })
   }
 
   // Check if all players are ready to start the game
-  const allPlayersReady = game.players.every((p) => (p.id === playerId ? isReady : p.isReady))
+  const allPlayersReady = game.players.every((p: DbPlayer) => (p.id === playerId ? isReady : p.isReady))
   const playerCount = game.players.length
 
   if (allPlayersReady && playerCount >= 3) {
@@ -201,7 +234,7 @@ export async function setPlayerReady(
     include: { players: true },
   })
 
-  return dbGameToAppGameState(updatedGame!)
+  return dbGameToAppGameState(updatedGame as DbGame)
 }
 
 // Start the game
@@ -217,7 +250,7 @@ export async function startGame(inviteCode: string): Promise<GameState | null> {
 
   // Get all response cards
   const responseCards = await prisma.responseCard.findMany()
-  const shuffledResponses = shuffleArray(responseCards.map((card) => card.text))
+  const shuffledResponses = shuffleArray(responseCards.map((card: DbResponseCard) => card.text))
 
   // Deal cards to players
   let cardIndex = 0
@@ -241,14 +274,12 @@ export async function startGame(inviteCode: string): Promise<GameState | null> {
     include: { players: true },
   })
 
-  const gameState = dbGameToAppGameState(updatedGame)
+  const gameState = dbGameToAppGameState(updatedGame as DbGame)
 
   // Notify all clients that the game has started
-  const payloadGameStarted = { type: "game-started" }
   pusherServer.trigger(`game-${inviteCode}`, "game-event", { type: "game-started" })
 
   // Send updated game state to all clients
-  const payloadGameState = { type: "game-state-updated", gameState }
   if (gameState) {
     pusherServer.trigger(`game-${inviteCode}`, "game-event", { type: "game-state-updated", gameState })
   }
@@ -267,7 +298,7 @@ export async function playCard(inviteCode: string, playerId: string, card: strin
     return null
   }
 
-  const player = game.players.find((p) => p.id === playerId)
+  const player = game.players.find((p: DbPlayer) => p.id === playerId)
   if (!player) {
     return null
   }
@@ -290,7 +321,6 @@ export async function playCard(inviteCode: string, playerId: string, card: strin
   })
 
   // Notify all clients about the card selection
-  const payload = { type: "card-selected", playerId }
   if (playerId) {
     pusherServer.trigger(`game-${inviteCode}`, "game-event", { type: "card-selected", playerId })
   }
@@ -303,8 +333,8 @@ export async function playCard(inviteCode: string, playerId: string, card: strin
 
   // Check if all non-czar players have selected a card
   const allPlayersSelected = updatedGame!.players
-    .filter((p) => p.id !== game.cardCzar)
-    .every((p) => p.selectedCard !== null)
+    .filter((p: DbPlayer) => p.id !== game.cardCzar)
+    .every((p: DbPlayer) => p.selectedCard !== null)
 
   if (allPlayersSelected) {
     // Update the game phase
@@ -314,10 +344,9 @@ export async function playCard(inviteCode: string, playerId: string, card: strin
       include: { players: true },
     })
 
-    const gameState = dbGameToAppGameState(judgedGame)
+    const gameState = dbGameToAppGameState(judgedGame as DbGame)
 
     // Send updated game state to all clients
-    const payloadGameState = { type: "game-state-updated", gameState }
     if (gameState) {
       pusherServer.trigger(`game-${inviteCode}`, "game-event", { type: "game-state-updated", gameState })
     }
@@ -325,7 +354,7 @@ export async function playCard(inviteCode: string, playerId: string, card: strin
     return gameState
   }
 
-  return dbGameToAppGameState(updatedGame!)
+  return dbGameToAppGameState(updatedGame as DbGame)
 }
 
 // Select a winner
@@ -360,16 +389,14 @@ export async function selectWinner(inviteCode: string, czarId: string, winnerId:
     include: { players: true },
   })
 
-  const gameState = dbGameToAppGameState(updatedGame)
+  const gameState = dbGameToAppGameState(updatedGame as DbGame)
 
   // Notify all clients about the winner selection
-  const payload = { type: "winner-selected", playerId: winnerId }
   if (winnerId) {
     pusherServer.trigger(`game-${inviteCode}`, "game-event", { type: "winner-selected", playerId: winnerId })
   }
 
   // Send updated game state to all clients
-  const payloadGameState = { type: "game-state-updated", gameState }
   if (gameState) {
     pusherServer.trigger(`game-${inviteCode}`, "game-event", { type: "game-state-updated", gameState })
   }
@@ -394,7 +421,7 @@ export async function nextRound(inviteCode: string): Promise<GameState | null> {
   }
 
   // Get all player IDs
-  const playerIds = game.players.map((p) => p.id)
+  const playerIds = game.players.map((p: DbPlayer) => p.id)
 
   // Rotate the card czar
   const currentCzarIndex = playerIds.indexOf(game.cardCzar)
@@ -411,7 +438,7 @@ export async function nextRound(inviteCode: string): Promise<GameState | null> {
 
   // Get all response cards
   const allResponseCards = await prisma.responseCard.findMany()
-  const allResponseTexts = allResponseCards.map((card) => card.text)
+  const allResponseTexts = allResponseCards.map((card: DbResponseCard) => card.text)
 
   // Reset selected cards and replace played cards
   for (const player of game.players) {
@@ -431,7 +458,7 @@ export async function nextRound(inviteCode: string): Promise<GameState | null> {
           if (p.selectedCard) usedCards.add(p.selectedCard)
         }
 
-        const unusedCards = allResponseTexts.filter((card) => !usedCards.has(card))
+        const unusedCards = allResponseTexts.filter((card: string) => !usedCards.has(card))
 
         // Add a new random card if available
         if (unusedCards.length > 0) {
@@ -465,14 +492,12 @@ export async function nextRound(inviteCode: string): Promise<GameState | null> {
     include: { players: true },
   })
 
-  const gameState = dbGameToAppGameState(updatedGame)
+  const gameState = dbGameToAppGameState(updatedGame as DbGame)
 
   // Notify all clients about the new round
-  const payload = { type: "next-round" }
   pusherServer.trigger(`game-${inviteCode}`, "game-event", { type: "next-round" })
 
   // Send updated game state to all clients
-  const payloadGameState = { type: "game-state-updated", gameState }
   if (gameState) {
     pusherServer.trigger(`game-${inviteCode}`, "game-event", { type: "game-state-updated", gameState })
   }
@@ -491,7 +516,7 @@ export async function leaveGame(inviteCode: string, playerId: string): Promise<b
     return false
   }
 
-  const player = game.players.find((p) => p.id === playerId)
+  const player = game.players.find((p: DbPlayer) => p.id === playerId)
   if (!player) {
     return false
   }
@@ -510,7 +535,6 @@ export async function leaveGame(inviteCode: string, playerId: string): Promise<b
   }
 
   // Notify all clients about the player leaving
-  const payload = { type: "player-left", playerId }
   if (playerId) {
     pusherServer.trigger(`game-${inviteCode}`, "game-event", { type: "player-left", playerId })
   }
@@ -522,7 +546,7 @@ export async function leaveGame(inviteCode: string, playerId: string): Promise<b
   })
 
   // If all players have left, remove the game
-  const connectedPlayers = updatedGame!.players.filter((p) => p.isConnected)
+  const connectedPlayers = updatedGame!.players.filter((p: DbPlayer) => p.isConnected)
   if (connectedPlayers.length === 0) {
     await prisma.game.delete({
       where: { id: game.id },
@@ -532,7 +556,7 @@ export async function leaveGame(inviteCode: string, playerId: string): Promise<b
 
   // If the card czar left, assign a new one
   if (playerId === game.cardCzar) {
-    const connectedPlayerIds = connectedPlayers.map((p) => p.id)
+    const connectedPlayerIds = connectedPlayers.map((p: DbPlayer) => p.id)
     if (connectedPlayerIds.length > 0) {
       await prisma.game.update({
         where: { id: game.id },
@@ -556,4 +580,3 @@ export async function cleanupOldGames(): Promise<void> {
     },
   })
 }
-

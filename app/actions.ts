@@ -14,7 +14,6 @@ export async function createGame(formData: FormData) {
 
   try {
     const { gameId, inviteCode, playerId } = await gameStore.createGame(playerName)
-
     // Store the player ID in a cookie
     const cookieStore = await cookies()
     cookieStore.set(`player-${inviteCode}`, playerId, {
